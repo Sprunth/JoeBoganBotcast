@@ -30,8 +30,15 @@ speech_to_text = SpeechToTextV1(
     password=config.get('credentials', 'password')
 )
 
-# ibm API is slow, so call it once and cache it
-if not os.path.isfile(CACHE_FILE_NAME):
+
+def get_raw_transcription_results() -> Dict:
+    # ibm API is slow, so call it once and cache it
+    if os.path.isfile(CACHE_FILE_NAME):
+        with open(CACHE_FILE_NAME) as f:
+            res = json.load(f)
+            print('recognition result loaded from cache')
+        return res
+
     with open(AUDIO_SOURCE_FILE_NAME, 'rb') as audio_file:
         speech_recognition_results: DetailedResponse = speech_to_text.recognize(
             audio=audio_file,
@@ -49,53 +56,57 @@ if not os.path.isfile(CACHE_FILE_NAME):
 
     with open(CACHE_FILE_NAME, 'w') as outfile:
         outfile.write(json.dumps(res))
-else:
-    with open(CACHE_FILE_NAME) as f:
-        res = json.load(f)
-        print('recognition result loaded from cache')
+    return res
 
-# post processing of result
-segment_count = 0
-segments: Dict[str, int] = {}
-transcription: Dict[int, SpeechRecord] = {}
 
-# index speakers
-for entry in res['speaker_labels']:
-    f = entry['from']
-    t = entry['to']
-    s = entry['speaker']
+def process_raw_results(res):
+    # post processing of result
+    segment_count = 0
+    segments: Dict[str, int] = {}
+    transcription: Dict[int, SpeechRecord] = {}
 
-    segments['%s-%s' % (f, t)] = segment_count
-    transcription[segment_count] = SpeechRecord(f, t, '', s)
-    segment_count += 1
+    # index speakers
+    for entry in res['speaker_labels']:
+        f = entry['from']
+        t = entry['to']
+        s = entry['speaker']
 
-# index transcribed text
+        segments['%s-%s' % (f, t)] = segment_count
+        transcription[segment_count] = SpeechRecord(f, t, '', s)
+        segment_count += 1
 
-# because it's broken up into multiple results for some reason
-for result in res['results']:
-    # strange key value to use, but it's actually only the *best* alternative here
-    # and again they use return a list so we iterate...
-    for stamps in result['alternatives']:
-        # finally the dict containing a list of timestamps, each as an array of [word, from, to]
-        for ts in stamps['timestamps']:
-            word = ts[0]
-            f = ts[1]
-            t = ts[2]
-            transcription[segments['%s-%s' % (f, t)]].word = word
-# done
-print(transcription)
+    # index transcribed text
 
-# we know how many segments there are due to segment_count, so just go through them in order
-# collect words until we see a speaker change
-current_speaker = transcription[0].speaker  # initial speaker
-current_speech: List[str] = []
-for segment_number in range(segment_count):
-    record = transcription[segment_number]
-    if record.speaker != current_speaker:
-        # speaker changed, so let's print and flush
-        print('Speaker %s: %s' % (current_speaker, ' '.join(current_speech)))
-        current_speaker = record.speaker
-        current_speech.clear()
-    current_speech.append(record.word)
-# need to make sure final words are printed
-print('Speaker %s: %s' % (current_speaker, ' '.join(current_speech)))
+    # because it's broken up into multiple results for some reason
+    for result in res['results']:
+        # strange key value to use, but it's actually only the *best* alternative here
+        # and again they use return a list so we iterate...
+        for stamps in result['alternatives']:
+            # finally the dict containing a list of timestamps, each as an array of [word, from, to]
+            for ts in stamps['timestamps']:
+                word = ts[0]
+                f = ts[1]
+                t = ts[2]
+                transcription[segments['%s-%s' % (f, t)]].word = word
+    # done
+    print(transcription)
+
+    # we know how many segments there are due to segment_count, so just go through them in order
+    # collect words until we see a speaker change
+    current_speaker = transcription[0].speaker  # initial speaker
+    current_speech: List[str] = []
+    for segment_number in range(segment_count):
+        record = transcription[segment_number]
+        if record.speaker != current_speaker:
+            # speaker changed, so let's print and flush
+            print('Speaker %s: %s' % (current_speaker, ' '.join(current_speech)))
+            current_speaker = record.speaker
+            current_speech.clear()
+        current_speech.append(record.word)
+    # need to make sure final words are printed
+    print('Speaker %s: %s' % (current_speaker, ' '.join(current_speech)))
+
+
+if __name__ == '__main__':
+    res = get_raw_transcription_results()
+    process_raw_results(res)
